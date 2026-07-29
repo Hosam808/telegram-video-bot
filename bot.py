@@ -45,7 +45,7 @@ async def get_youtube_formats(url):
     }
     
     try:
-        with yt-dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             formats = []
             seen = set()
@@ -136,7 +136,7 @@ async def download_and_send(url, update_or_query, msg, format_id='best'):
             'restrictfilenames': True,
         }
         
-        with yt-dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
             
