@@ -12,8 +12,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# التوكن - ضعه هنا مباشرة أو في متغير البيئة BOT_TOKEN
-TOKEN = os.environ.get('BOT_TOKEN', 'ضع_التوكن_هنا')
+# التوكن
+TOKEN = os.environ.get('BOT_TOKEN', '8753000380:AAEZHDcAdL_pjGY9sEcbMNulh-s_52BiO3Q')
 
 # مجلد التحميلات
 DOWNLOAD_DIR = 'downloads'
@@ -23,7 +23,7 @@ if not os.path.exists(DOWNLOAD_DIR):
 # قاموس لتخزين روابط المستخدمين
 user_links = {}
 
-# إعدادات متقدمة لتجاوز حظر يوتيوب (Bot Detection Bypass)
+# إعدادات لتجاوز حظر يوتيوب
 YOUTUBE_EXTRACTOR_ARGS = {
     'youtube': {
         'player_client': ['ios', 'android', 'mweb'],
@@ -33,13 +33,11 @@ YOUTUBE_EXTRACTOR_ARGS = {
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🎥 **أهلاً بيك في بوت تحميل الفيديوهات!**\n\n"
-        "أنا بوت بسيط وسريع وهساعدك تحمل الفيديوهات من انستجرام، يوتيوب، تيك توك، فيسبوك، وتويتر وغيرها.\n\n"
+        "🎥 **أهلاً بيك في بوت تحميل الفيديوهات والصوتيات!**\n\n"
+        "أنا بوت بسيط وسريع وهساعدك تحمل الفيديوهات أو مقاطع الصوت MP3 من يوتيوب، انستجرام، تيك توك، فيسبوك، وغيرها.\n\n"
         "🎯 كل اللي عليك:\n"
-        "• ابعتلي رابط الفيديو مباشرة.\n"
-        "• لو الفيديو من يوتيوب: هتختار الجودة المناسبة.\n"
-        "• لو من انستجرام أو منصة تانية: هحملهولك فوراً بأفضل جودة وبصوت واضح.\n\n"
-        "📝 **ملحوظة**: البوت بيدعم الفيديوهات العامة فقط.\n\n"
+        "• ابعتلي رابط الفيديو.\n"
+        "• اختر الجودة المناسبة أو خيار الصوت MP3.\n\n"
         "يلا، ابعتلي الرابط! 🚀",
         parse_mode='Markdown'
     )
@@ -60,8 +58,9 @@ def _extract_youtube_info_sync(url):
         for f in info.get('formats', []):
             if f.get('height') and f.get('ext') == 'mp4':
                 fid = f['format_id']
-                if fid not in seen:
-                    seen.add(fid)
+                res = f"{f['height']}p"
+                if res not in seen:  # تجميع الجودات الفريدة (360p, 480p, 720p...)
+                    seen.add(res)
                     filesize = f.get('filesize') or f.get('filesize_approx')
                     if filesize:
                         size_mb = filesize / (1024 * 1024)
@@ -71,17 +70,12 @@ def _extract_youtube_info_sync(url):
                     else:
                         size_str = "حجم غير معروف"
                     
-                    has_audio = f.get('acodec') != 'none'
-                    has_video = f.get('vcodec') != 'none'
-                    
-                    if has_video:
-                        formats.append({
-                            'format_id': fid,
-                            'resolution': f"{f['height']}p",
-                            'ext': f['ext'],
-                            'size': size_str,
-                            'has_audio': has_audio
-                        })
+                    formats.append({
+                        'format_id': fid,
+                        'resolution_num': int(f['height']),
+                        'resolution': res,
+                        'size': size_str,
+                    })
         
         return info.get('title', 'video'), formats
 
@@ -108,18 +102,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.edit_text("❌ ما لقيتش جودات متاحة أقل من 50MB للفيديو ده.")
                 return
             
-            formats.sort(key=lambda x: int(x['resolution'].replace('p', '')), reverse=True)
+            # ترتيب الجودات تصاعدياً أو تنازلياً
+            formats.sort(key=lambda x: x['resolution_num'], reverse=False)
             
             keyboard = []
-            for f in formats[:10]:
-                audio_icon = "🔊" if f['has_audio'] else "🔇"
-                label = f"{audio_icon} {f['resolution']} - {f['ext']} ({f['size']})"
-                callback_data = f"dl|{f['format_id']}"
+            # إضافة كل جودة في سطر منفصل (تحت بعض)
+            for f in formats[:8]:
+                label = f"🎬 فيديو {f['resolution']} ({f['size']})"
+                callback_data = f"dl|{f['format_id']}|video"
                 keyboard.append([InlineKeyboardButton(label, callback_data=callback_data)])
+            
+            # إضافة خيار الصوت MP3 في أخر القائمة تحته
+            keyboard.append([InlineKeyboardButton("🎵 تحميل بصيغة صوت MP3", callback_data="dl|bestaudio|audio")])
             
             reply_markup = InlineKeyboardMarkup(keyboard)
             await msg.edit_text(
-                f"📹 *{title[:200]}*\n\nاختر الجودة المناسبة:\n🔊 = بصوت | 🔇 = بدون صوت",
+                f"📹 *{title[:200]}*\n\nاختر الجودة أو الصيغة المطلوبة:",
                 reply_markup=reply_markup,
                 parse_mode='Markdown'
             )
@@ -128,15 +126,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"خطأ في معالجة رابط يوتيوب: {e}")
             await msg.edit_text(f"❌ حصل خطأ: {str(e)[:200]}")
     else:
-        await download_and_send(url, chat_id=update.effective_chat.id, msg_to_edit=msg, context=context, format_id='best')
+        # للمنصات التانية (انستجرام/تيك توك...)
+        keyboard = [
+            [InlineKeyboardButton("🎬 تحميل الفيديو بأفضل جودة", callback_data="dl|best|video")],
+            [InlineKeyboardButton("🎵 تحميل الصوت MP3 فقط", callback_data="dl|bestaudio|audio")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await msg.edit_text(
+            "اختر نوع التحميل المطلوب:",
+            reply_markup=reply_markup
+        )
 
-def _download_sync(url, format_id):
+def _download_sync(url, format_id, is_audio=False):
     output_template = os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s')
     
-    if 'youtube.com' in url or 'youtu.be' in url:
-        fmt = format_id if format_id != 'best' else 'best[vcodec!=none][acodec!=none]/best'
+    if is_audio:
+        fmt = 'bestaudio/best'
     else:
-        fmt = 'best[vcodec!=none][acodec!=none]/best'
+        if 'youtube.com' in url or 'youtu.be' in url:
+            fmt = format_id if format_id != 'best' else 'best[vcodec!=none][acodec!=none]/best'
+        else:
+            fmt = 'best[vcodec!=none][acodec!=none]/best'
 
     ydl_opts = {
         'format': fmt,
@@ -154,18 +164,20 @@ def _download_sync(url, format_id):
         
         if not os.path.exists(filename):
             base = filename.rsplit('.', 1)[0]
-            for ext in ['mp4', 'webm', 'mkv', 'mov']:
+            for ext in ['mp4', 'm4a', 'mp3', 'webm', 'mkv', 'mov']:
                 test_path = f"{base}.{ext}"
                 if os.path.exists(test_path):
                     filename = test_path
                     break
                     
-        return filename, info.get('title', 'الفيديو')
+        return filename, info.get('title', 'الملف')
 
-async def download_and_send(url, chat_id, msg_to_edit, context, format_id='best'):
+async def download_and_send(url, chat_id, msg_to_edit, context, format_id='best', mode='video'):
     filename = None
+    is_audio = (mode == 'audio')
+    
     try:
-        filename, title = await asyncio.to_thread(_download_sync, url, format_id)
+        filename, title = await asyncio.to_thread(_download_sync, url, format_id, is_audio)
         
         if not filename or not os.path.exists(filename):
             await msg_to_edit.edit_text("❌ لم يتم العثور على الملف المحمل.")
@@ -174,18 +186,26 @@ async def download_and_send(url, chat_id, msg_to_edit, context, format_id='best'
         file_size = os.path.getsize(filename) / (1024 * 1024)
         if file_size > 50:
             os.remove(filename)
-            await msg_to_edit.edit_text(f"❌ حجم الفيديو كبير جداً ({file_size:.1f}MB). الحد الأقصى لتليجرام 50MB.")
+            await msg_to_edit.edit_text(f"❌ حجم الملف كبير جداً ({file_size:.1f}MB). الحد الأقصى لتليجرام 50MB.")
             return
         
-        await msg_to_edit.edit_text("📤 جاري رفع الفيديو...")
+        await msg_to_edit.edit_text("📤 جاري إرسال الملف...")
         
-        with open(filename, 'rb') as video:
-            await context.bot.send_video(
-                chat_id=chat_id,
-                video=video,
-                caption=f"🎬 {title[:200]}",
-                supports_streaming=True
-            )
+        with open(filename, 'rb') as file_data:
+            if is_audio:
+                await context.bot.send_audio(
+                    chat_id=chat_id,
+                    audio=file_data,
+                    caption=f"🎵 {title[:200]}",
+                    title=title[:50]
+                )
+            else:
+                await context.bot.send_video(
+                    chat_id=chat_id,
+                    video=file_data,
+                    caption=f"🎬 {title[:200]}",
+                    supports_streaming=True
+                )
         
         try:
             await msg_to_edit.delete()
@@ -210,15 +230,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     
     if data.startswith('dl|'):
-        format_id = data.split('|')[1]
+        parts = data.split('|')
+        format_id = parts[1]
+        mode = parts[2] if len(parts) > 2 else 'video'
+        
         url = user_links.get(user_id)
         
         if not url:
             await query.edit_message_text("❌ انتهت الجلسة. من فضلك ابعت الرابط تاني.")
             return
             
-        await query.edit_message_text("⏳ جاري تحميل الجودة المختارة...")
-        await download_and_send(url, chat_id=update.effective_chat.id, msg_to_edit=query.message, context=context, format_id=format_id)
+        status_text = "⏳ جاري تحميل الصوت MP3..." if mode == 'audio' else "⏳ جاري تحميل الفيديو..."
+        await query.edit_message_text(status_text)
+        await download_and_send(url, chat_id=update.effective_chat.id, msg_to_edit=query.message, context=context, format_id=format_id, mode=mode)
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
