@@ -14,7 +14,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # التوكن
-TOKEN = os.environ.get('BOT_TOKEN', 'ضع_التوكن_هنا')
+TOKEN = os.environ.get('BOT_TOKEN', '8753000380:AAEZHDcAdL_pjGY9sEcbMNulh-s_52BiO3Q')
 
 # مجلد التحميلات
 DOWNLOAD_DIR = 'downloads'
