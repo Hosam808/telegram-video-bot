@@ -13,7 +13,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # التوكن - ضعه هنا مباشرة أو في متغير البيئة BOT_TOKEN
-TOKEN = os.environ.get('BOT_TOKEN', '8753000380:AAEZHDcAdL_pjGY9sEcbMNulh-s_52BiO3Q')
+TOKEN = os.environ.get('BOT_TOKEN', 'ضع_التوكن_هنا')
 
 # مجلد التحميلات
 DOWNLOAD_DIR = 'downloads'
@@ -22,6 +22,14 @@ if not os.path.exists(DOWNLOAD_DIR):
 
 # قاموس لتخزين روابط المستخدمين
 user_links = {}
+
+# إعدادات متقدمة لتجاوز حظر يوتيوب (Bot Detection Bypass)
+YOUTUBE_EXTRACTOR_ARGS = {
+    'youtube': {
+        'player_client': ['ios', 'android', 'mweb'],
+        'skip': ['webpage', 'configs']
+    }
+}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -41,6 +49,8 @@ def _extract_youtube_info_sync(url):
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
+        'extractor_args': YOUTUBE_EXTRACTOR_ARGS,
+        'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
@@ -123,11 +133,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def _download_sync(url, format_id):
     output_template = os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s')
     
-    # اختيار صيغ تحتوي على الصوت والفيديو معاً
     if 'youtube.com' in url or 'youtu.be' in url:
         fmt = format_id if format_id != 'best' else 'best[vcodec!=none][acodec!=none]/best'
     else:
-        # لانستجرام وباقي المنصات: تجنب الصيغ التي ليس بها صوت
         fmt = 'best[vcodec!=none][acodec!=none]/best'
 
     ydl_opts = {
@@ -136,7 +144,8 @@ def _download_sync(url, format_id):
         'quiet': True,
         'no_warnings': True,
         'restrictfilenames': True,
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'extractor_args': YOUTUBE_EXTRACTOR_ARGS,
+        'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
     }
     
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
