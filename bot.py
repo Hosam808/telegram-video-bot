@@ -12,8 +12,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# التوكن - يمكنك وضع التوكن مباشرة هنا أو في متغيرات البيئة
-TOKEN = os.environ.get('BOT_TOKEN', 'ضع_التوكن_هنا')
+# التوكن - ضعه هنا مباشرة أو في متغير البيئة BOT_TOKEN
+TOKEN = os.environ.get('BOT_TOKEN', '8753000380:AAEZHDcAdL_pjGY9sEcbMNulh-s_52BiO3Q')
 
 # مجلد التحميلات
 DOWNLOAD_DIR = 'downloads'
@@ -30,7 +30,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎯 كل اللي عليك:\n"
         "• ابعتلي رابط الفيديو مباشرة.\n"
         "• لو الفيديو من يوتيوب: هتختار الجودة المناسبة.\n"
-        "• لو من انستجرام أو منصة تانية: هحملهولك فوراً بأفضل جودة.\n\n"
+        "• لو من انستجرام أو منصة تانية: هحملهولك فوراً بأفضل جودة وبصوت واضح.\n\n"
         "📝 **ملحوظة**: البوت بيدعم الفيديوهات العامة فقط.\n\n"
         "يلا، ابعتلي الرابط! 🚀",
         parse_mode='Markdown'
@@ -123,12 +123,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def _download_sync(url, format_id):
     output_template = os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s')
     
-    # اختيار الصيغ بدون الحاجة لـ FFmpeg خارجي لدمج الصوت والصورة
+    # اختيار صيغ تحتوي على الصوت والفيديو معاً
     if 'youtube.com' in url or 'youtu.be' in url:
-        fmt = format_id if format_id != 'best' else 'b*/best'
+        fmt = format_id if format_id != 'best' else 'best[vcodec!=none][acodec!=none]/best'
     else:
-        # لانستجرام وباقي المنصات
-        fmt = 'b*/best'
+        # لانستجرام وباقي المنصات: تجنب الصيغ التي ليس بها صوت
+        fmt = 'best[vcodec!=none][acodec!=none]/best'
 
     ydl_opts = {
         'format': fmt,
