@@ -3,7 +3,7 @@ import asyncio
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-import yt-dlp
+import yt_dlp
 
 # إعداد التسجيل
 logging.basicConfig(
