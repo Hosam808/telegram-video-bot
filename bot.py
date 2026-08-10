@@ -72,6 +72,38 @@ MOBILE_USER_AGENT = (
 IMAGE_EXTS = {'jpg', 'jpeg', 'png', 'webp'}
 AUDIO_EXTS = {'mp3', 'm4a', 'aac', 'opus', 'wav'}
 
+# ==================== إعداد الـ Cookies (مهم لتجاوز حظر يوتيوب/انستجرام) ====================
+# يوتيوب وانستجرام بقوا بيمنعوا الطلبات الجاية من سيرفرات الاستضافة من غير تسجيل دخول.
+# الحل: تحط محتوى ملف cookies.txt (بصيغة Netscape) كـ environment variable،
+# والبوت هيكتبه في ملف مؤقت عند التشغيل ويستخدمه تلقائياً.
+COOKIES_DIR = os.path.join(DOWNLOAD_DIR, '.cookies')
+os.makedirs(COOKIES_DIR, exist_ok=True)
+
+
+def _write_cookies_file(env_var_name: str, filename: str) -> str | None:
+    """يكتب محتوى الـ cookies من environment variable في ملف، ويرجع مساره (أو None لو مفيش)."""
+    content = os.environ.get(env_var_name, '').strip()
+    if not content:
+        return None
+    path = os.path.join(COOKIES_DIR, filename)
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(content + '\n')
+    return path
+
+
+YOUTUBE_COOKIES_PATH = _write_cookies_file('YOUTUBE_COOKIES', 'youtube_cookies.txt')
+INSTAGRAM_COOKIES_PATH = _write_cookies_file('INSTAGRAM_COOKIES', 'instagram_cookies.txt')
+
+if YOUTUBE_COOKIES_PATH:
+    logger.info("✅ تم تحميل كوكيز يوتيوب.")
+else:
+    logger.warning("⚠️ مفيش كوكيز يوتيوب (YOUTUBE_COOKIES) — روابط يوتيوب ممكن تفشل بسبب حظر البوتات.")
+
+if INSTAGRAM_COOKIES_PATH:
+    logger.info("✅ تم تحميل كوكيز انستجرام.")
+else:
+    logger.warning("⚠️ مفيش كوكيز انستجرام (INSTAGRAM_COOKIES) — تحميل الصور ممكن يفشل.")
+
 
 # ==================== أدوات مساعدة ====================
 def is_supported_url(url: str) -> bool:
@@ -121,6 +153,9 @@ def _extract_youtube_info_sync(url):
         'extractor_args': YOUTUBE_EXTRACTOR_ARGS,
         'user_agent': MOBILE_USER_AGENT,
     }
+    if YOUTUBE_COOKIES_PATH:
+        ydl_opts['cookiefile'] = YOUTUBE_COOKIES_PATH
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
         formats = []
@@ -207,7 +242,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         except Exception as e:
             logger.error(f"خطأ في معالجة رابط يوتيوب: {e}")
-            await msg.edit_text(f"❌ حصل خطأ: {str(e)[:200]}")
+            if 'sign in' in str(e).lower() or 'not a bot' in str(e).lower():
+                await msg.edit_text(
+                    "❌ يوتيوب طالب تسجيل دخول عشان يأكد إن الطلب مش من بوت.\n"
+                    "لازم مسؤول البوت يضيف كوكيز يوتيوب (YOUTUBE_COOKIES)."
+                )
+            else:
+                await msg.edit_text(f"❌ حصل خطأ: {str(e)[:200]}")
     else:
         # للمنصات التانية (انستجرام/تيك توك/فيسبوك/تويتر...)
         # ملحوظة: بعض المنشورات (زي صور انستجرام) هيتم اكتشافها تلقائياً
@@ -245,6 +286,14 @@ def _download_sync(url, format_id, is_audio=False):
         'user_agent': MOBILE_USER_AGENT,
     }
 
+    is_youtube = 'youtube.com' in url or 'youtu.be' in url
+    is_instagram = 'instagram.com' in url
+
+    if is_youtube and YOUTUBE_COOKIES_PATH:
+        ydl_opts['cookiefile'] = YOUTUBE_COOKIES_PATH
+    elif is_instagram and INSTAGRAM_COOKIES_PATH:
+        ydl_opts['cookiefile'] = INSTAGRAM_COOKIES_PATH
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         filename = ydl.prepare_filename(info)
@@ -268,11 +317,20 @@ def _download_images_sync(url):
     session_dir = os.path.join(DOWNLOAD_DIR, f"gallery_{uuid.uuid4().hex[:8]}")
     os.makedirs(session_dir, exist_ok=True)
 
+    cmd = ['gallery-dl', '--dest', session_dir, '--no-mtime']
+    if 'instagram.com' in url and INSTAGRAM_COOKIES_PATH:
+        cmd += ['--cookies', INSTAGRAM_COOKIES_PATH]
+    cmd.append(url)
+
     try:
-        subprocess.run(
-            ['gallery-dl', '--dest', session_dir, '-q', '--no-mtime', url],
-            capture_output=True, text=True, timeout=GALLERY_DL_TIMEOUT, check=False
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=GALLERY_DL_TIMEOUT, check=False
         )
+        # نسجل ناتج gallery-dl دايماً (مش بس عند الفشل) عشان نقدر نشخّص أي مشكلة مستقبلية
+        if result.returncode != 0:
+            logger.error(f"gallery-dl فشل (code={result.returncode}). stderr: {result.stderr[:1000]}")
+        elif result.stderr:
+            logger.info(f"gallery-dl stderr (نجح لكن فيه تحذيرات): {result.stderr[:500]}")
     except FileNotFoundError:
         raise RuntimeError("مكتبة gallery-dl مش متثبتة على السيرفر (لازم تتضاف في requirements.txt).")
     except subprocess.TimeoutExpired:
@@ -364,10 +422,11 @@ async def download_and_send(url, chat_id, msg_to_edit, context, format_id='best'
                 pass
 
         except Exception as e:
-            err_msg = str(e).lower()
-            # لو المشكلة إن المنشور مفيهوش فيديو، جرب تحميله كصور بدل ما تدي خطأ نهائي
-            is_no_video_error = ('no video' in err_msg) or ('unsupported url' in err_msg)
-            if not is_audio and is_no_video_error:
+            logger.error(f"yt-dlp فشل في تحميل {url}: {e}")
+            is_youtube = 'youtube.com' in url or 'youtu.be' in url
+            # أي فشل من yt-dlp لمنصة غير يوتيوب (مش مود صوت) نجرب معاه gallery-dl
+            # كخطة بديلة، لأن يوتيوب مختلف تماماً وممكن الفشل يكون لسبب تاني (زي حظر البوت).
+            if not is_audio and not is_youtube:
                 await msg_to_edit.edit_text("🖼️ مفيش فيديو في المنشور ده، بحاول أحمله كصور...")
                 session_dir = None
                 try:
@@ -386,8 +445,12 @@ async def download_and_send(url, chat_id, msg_to_edit, context, format_id='best'
                             shutil.rmtree(session_dir, ignore_errors=True)
                         except Exception:
                             pass
+            elif is_youtube:
+                await msg_to_edit.edit_text(
+                    "❌ فشل تحميل فيديو اليوتيوب. غالباً يوتيوب طالب تسجيل دخول (كوكيز) — "
+                    "لو المشكلة مستمرة كلم مسؤول البوت."
+                )
             else:
-                logger.error(f"خطأ في التحميل: {e}")
                 await msg_to_edit.edit_text(f"❌ فشل التحميل: {str(e)[:200]}")
         finally:
             if filename and os.path.exists(filename):
@@ -455,3 +518,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
