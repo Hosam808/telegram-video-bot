@@ -1,9 +1,11 @@
 import os
 import re
 import time
+import uuid
 import asyncio
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import subprocess
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.constants import ChatType
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import yt_dlp
@@ -33,6 +35,7 @@ MAX_FILE_SIZE_MB = 50
 LINK_TTL_SECONDS = 30 * 60          # مدة صلاحية الرابط المخزن للمستخدم
 RATE_LIMIT_SECONDS = 3              # أقل فترة بين طلب وطلب لنفس المستخدم
 MAX_CONCURRENT_DOWNLOADS = 3        # أقصى عدد تحميلات شغالة في نفس الوقت
+GALLERY_DL_TIMEOUT = 60              # أقصى وقت انتظار لتحميل الصور بـ gallery-dl
 
 # قاموس لتخزين روابط المستخدمين مع وقت الإضافة (لمنع تضخم الذاكرة)
 user_links = {}            # user_id -> {'url': str, 'ts': float}
@@ -257,6 +260,58 @@ def _download_sync(url, format_id, is_audio=False):
         return filename, info.get('title', 'الملف')
 
 
+def _download_images_sync(url):
+    """
+    خطة بديلة لتحميل الصور من منشورات مفيهاش فيديو (باستخدام gallery-dl).
+    مش مضمون 100% - بيعتمد على استمرار دعم gallery-dl للمنصة ولحالة الرابط.
+    """
+    session_dir = os.path.join(DOWNLOAD_DIR, f"gallery_{uuid.uuid4().hex[:8]}")
+    os.makedirs(session_dir, exist_ok=True)
+
+    try:
+        subprocess.run(
+            ['gallery-dl', '--dest', session_dir, '-q', '--no-mtime', url],
+            capture_output=True, text=True, timeout=GALLERY_DL_TIMEOUT, check=False
+        )
+    except FileNotFoundError:
+        raise RuntimeError("مكتبة gallery-dl مش متثبتة على السيرفر (لازم تتضاف في requirements.txt).")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("استغرق تحميل الصور وقت طويل جداً.")
+
+    image_files = []
+    for root, _, files in os.walk(session_dir):
+        for f in files:
+            ext = f.rsplit('.', 1)[-1].lower() if '.' in f else ''
+            if ext in IMAGE_EXTS:
+                image_files.append(os.path.join(root, f))
+    image_files.sort()
+    return image_files, session_dir
+
+
+async def send_images(image_paths, chat_id, msg_to_edit, context):
+    await msg_to_edit.edit_text("📤 جاري إرسال الصور...")
+
+    if len(image_paths) == 1:
+        with open(image_paths[0], 'rb') as f:
+            await context.bot.send_photo(chat_id=chat_id, photo=f)
+    else:
+        # تليجرام بيسمح بحد أقصى 10 صور في كل ألبوم، فبنقسمهم لو أكتر من كده
+        for i in range(0, len(image_paths), 10):
+            chunk = image_paths[i:i + 10]
+            open_files = [open(p, 'rb') for p in chunk]
+            try:
+                media = [InputMediaPhoto(fh) for fh in open_files]
+                await context.bot.send_media_group(chat_id=chat_id, media=media)
+            finally:
+                for fh in open_files:
+                    fh.close()
+
+    try:
+        await msg_to_edit.delete()
+    except Exception:
+        pass
+
+
 async def download_and_send(url, chat_id, msg_to_edit, context, format_id='best', mode='video'):
     filename = None
     is_audio = (mode == 'audio')
@@ -309,8 +364,31 @@ async def download_and_send(url, chat_id, msg_to_edit, context, format_id='best'
                 pass
 
         except Exception as e:
-            logger.error(f"خطأ في التحميل: {e}")
-            await msg_to_edit.edit_text(f"❌ فشل التحميل: {str(e)[:200]}")
+            err_msg = str(e).lower()
+            # لو المشكلة إن المنشور مفيهوش فيديو، جرب تحميله كصور بدل ما تدي خطأ نهائي
+            is_no_video_error = ('no video' in err_msg) or ('unsupported url' in err_msg)
+            if not is_audio and is_no_video_error:
+                await msg_to_edit.edit_text("🖼️ مفيش فيديو في المنشور ده، بحاول أحمله كصور...")
+                session_dir = None
+                try:
+                    images, session_dir = await asyncio.to_thread(_download_images_sync, url)
+                    if not images:
+                        await msg_to_edit.edit_text("❌ مقدرتش أحمل صور من الرابط ده. المنصة ممكن تكون مدعومتش حالياً.")
+                    else:
+                        await send_images(images, chat_id, msg_to_edit, context)
+                except Exception as e2:
+                    logger.error(f"خطأ في تحميل الصور: {e2}")
+                    await msg_to_edit.edit_text(f"❌ فشل تحميل الصور: {str(e2)[:200]}")
+                finally:
+                    if session_dir and os.path.exists(session_dir):
+                        try:
+                            import shutil
+                            shutil.rmtree(session_dir, ignore_errors=True)
+                        except Exception:
+                            pass
+            else:
+                logger.error(f"خطأ في التحميل: {e}")
+                await msg_to_edit.edit_text(f"❌ فشل التحميل: {str(e)[:200]}")
         finally:
             if filename and os.path.exists(filename):
                 try:
