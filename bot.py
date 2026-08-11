@@ -1,11 +1,9 @@
 import os
 import re
 import time
-import uuid
 import asyncio
 import logging
-import subprocess
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatType
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import yt_dlp
@@ -35,7 +33,6 @@ MAX_FILE_SIZE_MB = 50
 LINK_TTL_SECONDS = 30 * 60          # مدة صلاحية الرابط المخزن للمستخدم
 RATE_LIMIT_SECONDS = 3              # أقل فترة بين طلب وطلب لنفس المستخدم
 MAX_CONCURRENT_DOWNLOADS = 3        # أقصى عدد تحميلات شغالة في نفس الوقت
-GALLERY_DL_TIMEOUT = 60              # أقصى وقت انتظار لتحميل الصور بـ gallery-dl
 
 # قاموس لتخزين روابط المستخدمين مع وقت الإضافة (لمنع تضخم الذاكرة)
 user_links = {}            # user_id -> {'url': str, 'ts': float}
@@ -68,8 +65,7 @@ MOBILE_USER_AGENT = (
     'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
 )
 
-# امتدادات نعتبرها صور / صوت / فيديو عشان نبعتها بالطريقة الصح على تليجرام
-IMAGE_EXTS = {'jpg', 'jpeg', 'png', 'webp'}
+# امتدادات نعتبرها صوت / فيديو عشان نبعتها بالطريقة الصح على تليجرام
 AUDIO_EXTS = {'mp3', 'm4a', 'aac', 'opus', 'wav'}
 
 # ==================== إعداد الـ Cookies (مهم لتجاوز حظر يوتيوب/انستجرام) ====================
@@ -102,7 +98,7 @@ else:
 if INSTAGRAM_COOKIES_PATH:
     logger.info("✅ تم تحميل كوكيز انستجرام.")
 else:
-    logger.warning("⚠️ مفيش كوكيز انستجرام (INSTAGRAM_COOKIES) — تحميل الصور ممكن يفشل.")
+    logger.warning("⚠️ مفيش كوكيز انستجرام (INSTAGRAM_COOKIES) — تحميل فيديوهات انستجرام ممكن يفشل.")
 
 
 # ==================== أدوات مساعدة ====================
@@ -134,8 +130,8 @@ def cleanup_expired_links():
 # ==================== أوامر البوت ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🎥 **أهلاً بيك في بوت تحميل الفيديوهات والصور والصوتيات!**\n\n"
-        "أنا بوت بسيط وسريع وهساعدك تحمل الفيديوهات، الصور، أو مقاطع الصوت MP3 "
+        "🎥 **أهلاً بيك في بوت تحميل الفيديوهات والصوتيات!**\n\n"
+        "أنا بوت بسيط وسريع وهساعدك تحمل الفيديوهات أو مقاطع الصوت MP3 "
         "من يوتيوب، انستجرام، تيك توك، فيسبوك، وغيرها.\n\n"
         "🎯 كل اللي عليك:\n"
         "• ابعتلي رابط المنشور أو الفيديو.\n"
@@ -251,10 +247,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.edit_text(f"❌ حصل خطأ: {str(e)[:200]}")
     else:
         # للمنصات التانية (انستجرام/تيك توك/فيسبوك/تويتر...)
-        # ملحوظة: بعض المنشورات (زي صور انستجرام) هيتم اكتشافها تلقائياً
-        # عند التحميل وهتتبعت كصورة مش فيديو (شوف download_and_send).
         keyboard = [
-            [InlineKeyboardButton("⬇️ تحميل (فيديو أو صورة - أفضل جودة)", callback_data="dl|best|video")],
+            [InlineKeyboardButton("⬇️ تحميل الفيديو (أفضل جودة)", callback_data="dl|best|video")],
             [InlineKeyboardButton("🎵 تحميل الصوت MP3 فقط", callback_data="dl|bestaudio|audio")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -273,7 +267,6 @@ def _download_sync(url, format_id, is_audio=False):
         if 'youtube.com' in url or 'youtu.be' in url:
             fmt = format_id if format_id != 'best' else 'best[vcodec!=none][acodec!=none]/best'
         else:
-            # يخلي yt-dlp يختار أفضل حاجة متاحة، سواء فيديو أو صورة (زي منشورات انستجرام الصور)
             fmt = 'best'
 
     ydl_opts = {
@@ -300,74 +293,13 @@ def _download_sync(url, format_id, is_audio=False):
 
         if not os.path.exists(filename):
             base = filename.rsplit('.', 1)[0]
-            for ext in ['mp4', 'm4a', 'mp3', 'webm', 'mkv', 'mov', 'jpg', 'jpeg', 'png', 'webp']:
+            for ext in ['mp4', 'm4a', 'mp3', 'webm', 'mkv', 'mov']:
                 test_path = f"{base}.{ext}"
                 if os.path.exists(test_path):
                     filename = test_path
                     break
 
         return filename, info.get('title', 'الملف')
-
-
-def _download_images_sync(url):
-    """
-    خطة بديلة لتحميل الصور من منشورات مفيهاش فيديو (باستخدام gallery-dl).
-    مش مضمون 100% - بيعتمد على استمرار دعم gallery-dl للمنصة ولحالة الرابط.
-    """
-    session_dir = os.path.join(DOWNLOAD_DIR, f"gallery_{uuid.uuid4().hex[:8]}")
-    os.makedirs(session_dir, exist_ok=True)
-
-    cmd = ['gallery-dl', '--dest', session_dir, '--no-mtime']
-    if 'instagram.com' in url and INSTAGRAM_COOKIES_PATH:
-        cmd += ['--cookies', INSTAGRAM_COOKIES_PATH]
-    cmd.append(url)
-
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=GALLERY_DL_TIMEOUT, check=False
-        )
-        # نسجل ناتج gallery-dl دايماً (مش بس عند الفشل) عشان نقدر نشخّص أي مشكلة مستقبلية
-        if result.returncode != 0:
-            logger.error(f"gallery-dl فشل (code={result.returncode}). stderr: {result.stderr[:1000]}")
-        elif result.stderr:
-            logger.info(f"gallery-dl stderr (نجح لكن فيه تحذيرات): {result.stderr[:500]}")
-    except FileNotFoundError:
-        raise RuntimeError("مكتبة gallery-dl مش متثبتة على السيرفر (لازم تتضاف في requirements.txt).")
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("استغرق تحميل الصور وقت طويل جداً.")
-
-    image_files = []
-    for root, _, files in os.walk(session_dir):
-        for f in files:
-            ext = f.rsplit('.', 1)[-1].lower() if '.' in f else ''
-            if ext in IMAGE_EXTS:
-                image_files.append(os.path.join(root, f))
-    image_files.sort()
-    return image_files, session_dir
-
-
-async def send_images(image_paths, chat_id, msg_to_edit, context):
-    await msg_to_edit.edit_text("📤 جاري إرسال الصور...")
-
-    if len(image_paths) == 1:
-        with open(image_paths[0], 'rb') as f:
-            await context.bot.send_photo(chat_id=chat_id, photo=f)
-    else:
-        # تليجرام بيسمح بحد أقصى 10 صور في كل ألبوم، فبنقسمهم لو أكتر من كده
-        for i in range(0, len(image_paths), 10):
-            chunk = image_paths[i:i + 10]
-            open_files = [open(p, 'rb') for p in chunk]
-            try:
-                media = [InputMediaPhoto(fh) for fh in open_files]
-                await context.bot.send_media_group(chat_id=chat_id, media=media)
-            finally:
-                for fh in open_files:
-                    fh.close()
-
-    try:
-        await msg_to_edit.delete()
-    except Exception:
-        pass
 
 
 async def download_and_send(url, chat_id, msg_to_edit, context, format_id='best', mode='video'):
@@ -402,12 +334,6 @@ async def download_and_send(url, chat_id, msg_to_edit, context, format_id='best'
                         caption=f"🎵 {title[:200]}",
                         title=title[:50]
                     )
-                elif ext in IMAGE_EXTS:
-                    await context.bot.send_photo(
-                        chat_id=chat_id,
-                        photo=file_data,
-                        caption=f"🖼️ {title[:200]}"
-                    )
                 else:
                     await context.bot.send_video(
                         chat_id=chat_id,
@@ -424,28 +350,7 @@ async def download_and_send(url, chat_id, msg_to_edit, context, format_id='best'
         except Exception as e:
             logger.error(f"yt-dlp فشل في تحميل {url}: {e}")
             is_youtube = 'youtube.com' in url or 'youtu.be' in url
-            # أي فشل من yt-dlp لمنصة غير يوتيوب (مش مود صوت) نجرب معاه gallery-dl
-            # كخطة بديلة، لأن يوتيوب مختلف تماماً وممكن الفشل يكون لسبب تاني (زي حظر البوت).
-            if not is_audio and not is_youtube:
-                await msg_to_edit.edit_text("🖼️ مفيش فيديو في المنشور ده، بحاول أحمله كصور...")
-                session_dir = None
-                try:
-                    images, session_dir = await asyncio.to_thread(_download_images_sync, url)
-                    if not images:
-                        await msg_to_edit.edit_text("❌ مقدرتش أحمل صور من الرابط ده. المنصة ممكن تكون مدعومتش حالياً.")
-                    else:
-                        await send_images(images, chat_id, msg_to_edit, context)
-                except Exception as e2:
-                    logger.error(f"خطأ في تحميل الصور: {e2}")
-                    await msg_to_edit.edit_text(f"❌ فشل تحميل الصور: {str(e2)[:200]}")
-                finally:
-                    if session_dir and os.path.exists(session_dir):
-                        try:
-                            import shutil
-                            shutil.rmtree(session_dir, ignore_errors=True)
-                        except Exception:
-                            pass
-            elif is_youtube:
+            if is_youtube:
                 await msg_to_edit.edit_text(
                     "❌ فشل تحميل فيديو اليوتيوب. غالباً يوتيوب طالب تسجيل دخول (كوكيز) — "
                     "لو المشكلة مستمرة كلم مسؤول البوت."
@@ -518,4 +423,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
